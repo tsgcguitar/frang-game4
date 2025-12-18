@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>邏輯連線大師 - 完美修復版</title>
+    <style>
+        :root {
+            --bg: #1a1a2e; --grid: #16213e; --cell: #0f3460; --text: #e94560;
+        }
+        body {
+            margin: 0; 
+            background: var(--bg); 
+            color: white; 
+            font-family: 'Segoe UI', sans-serif;
+            display: flex; 
+            flex-direction: column; 
+            align-items: center; 
+            justify-content: flex-start; /* 改為從頂部開始排，避免置中導致頭尾切掉 */
+            min-height: 100vh; 
+            transition: 1s ease;
+            user-select: none; 
+            -webkit-user-select: none;
+            overflow-y: auto; /* 允許垂直滾動，救回消失的按鈕 */
+            padding-bottom: 50px; /* 底部留白 */
+        }
+        /* 主題切換 */
+        body.theme-1 { --bg: #142d14; --grid: #1e3d1e; --cell: #2d5a27; --text: #a8dadc; }
+        body.theme-2 { --bg: #1b263b; --grid: #415a77; --cell: #778da9; --text: #e0e1dd; }
+        body.theme-3 { --bg: #2b1212; --grid: #4a1c1c; --cell: #6b2d2d; --text: #ff9f1c; }
+
+        #ui-top { 
+            text-align: center; 
+            margin: 20px 0 10px 0; 
+            flex-shrink: 0;
+        }
+        #level-title { font-size: 2rem; font-weight: 900; margin-bottom: 5px; text-shadow: 2px 2px 0px rgba(0,0,0,0.3); }
+        #timer { font-size: 1.5rem; font-family: monospace; color: #ff9f1c; }
+        
+        #game-wrapper {
+            position: relative;
+            padding: 10px;
+            background: rgba(0,0,0,0.2);
+            border-radius: 20px;
+            margin-bottom: 20px;
+            flex-shrink: 0; /* 防止地圖被壓縮 */
+        }
+
+        canvas { 
+            display: block;
+            background: var(--grid); 
+            border-radius: 12px; 
+            box-shadow: 0 5px 20px rgba(0,0,0,0.4); 
+            cursor: crosshair;
+            touch-action: none;
+        }
+
+        /* 按鈕區塊 - 確保一定可見 */
+        #btn-group { 
+            display: flex; 
+            gap: 15px; 
+            flex-wrap: wrap; 
+            justify-content: center;
+            width: 100%;
+            max-width: 500px;
+            z-index: 10;
+        }
+        
+        button {
+            padding: 15px 25px; 
+            border: none; 
+            border-radius: 12px;
+            background: #e94560; 
+            color: white; 
+            font-size: 1rem; 
+            font-weight: bold; 
+            cursor: pointer;
+            box-shadow: 0 4px 0 rgba(0,0,0,0.2);
+            transition: transform 0.1s;
+            min-width: 100px; /* 確保按鈕不會太小 */
+        }
+        button:active { transform: translateY(4px); box-shadow: none; }
+        button#undo-btn { background: #4cc9f0; color: #333; }
+        button#hint-btn { background: #ff9f1c; color: #333; }
+        button.reset-btn { background: #e53e3e; }
+
+        /* 彈窗 */
+        #modal {
+            position: fixed; top:0; left:0; width:100%; height:100%;
+            background: rgba(0,0,0,0.9); display: none;
+            flex-direction: column; align-items: center; justify-content: center; z-index: 100;
+            backdrop-filter: blur(5px);
+        }
+        #modal h2 { color: #4cc9f0; font-size: 3rem; margin: 0 0 20px 0; }
+        #modal button { font-size: 1.5rem; padding: 15px 50px; background: #48bb78; }
+
+        /* 警告吐司訊息 */
+        #toast {
+            position: absolute;
+            top: 50%; left: 50%; transform: translate(-50%, -50%);
+            background: rgba(255, 69, 58, 0.95);
+            color: white; padding: 15px 30px; border-radius: 50px;
+            font-weight: bold; font-size: 1.2rem;
+            pointer-events: none; opacity: 0; transition: opacity 0.3s;
+            white-space: nowrap; z-index: 50; box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+        }
+    </style>
+</head>
+<body class="theme-1">
+
+<div id="ui-top">
+    <div id="level-title">LEVEL 1</div>
+    <div id="timer">時間: 00:00</div>
+</div>
+
+<div id="game-wrapper">
+    <canvas id="gameCanvas"></canvas>
+    <div id="toast">還有格子沒填滿！</div>
+</div>
+
+<div id="btn-group">
+    <button id="undo-btn" onclick="game.undo()">返回一步</button>
+    <button id="hint-btn" onclick="game.showHint()">提示方向</button>
+    <button class="reset-btn" onclick="game.initLevel()">重置關卡</button>
+</div>
+
+<div id="modal">
+    <h2 id="modal-title">恭喜過關!</h2>
+    <p id="modal-time" style="font-size: 1.5rem; color: #ddd; margin-bottom: 30px;"></p>
+    <button onclick="game.nextLevel()">下一關</button>
+</div>
+
+<script>
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+function playTone(type) {
+    if(audioCtx.state === 'suspended') audioCtx.resume();
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.connect(gain); gain.connect(audioCtx.destination);
+    
+    const now = audioCtx.currentTime;
+    if (type === 'move') {
+        osc.frequency.setValueAtTime(400, now);
+        gain.gain.setValueAtTime(0.05, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
+        osc.start(now); osc.stop(now + 0.1);
+    } else if (type === 'win') {
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(300, now);
+        osc.frequency.linearRampToValueAtTime(600, now + 0.3);
+        gain.gain.setValueAtTime(0.2, now);
+        gain.gain.linearRampToValueAtTime(0.001, now + 1.0);
+        osc.start(now); osc.stop(now + 1.0);
+    } else if (type === 'error') {
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(150, now);
+        osc.frequency.linearRampToValueAtTime(100, now + 0.2);
+        gain.gain.setValueAtTime(0.1, now);
+        gain.gain.linearRampToValueAtTime(0.001, now + 0.2);
+        osc.start(now); osc.stop(now + 0.2);
+    }
+}
+
+class Game {
+    constructor() {
+        this.canvas = document.getElementById('gameCanvas');
+        this.ctx = this.canvas.getContext('2d');
+        this.level = 1;
+        this.gridSize = 6;
+        this.cellSize = 50;
+        this.fullPath = []; 
+        this.checkpoints = {}; 
+        this.userPath = []; 
+        this.hasWon = false;
+        
+        this.startTime = null;
+        this.timerInterval = null;
+        this.isDragging = false;
+        this.lastInputPos = null;
+
+        // 綁定事件
+        const start = (e) => { 
+            // 如果是點擊按鈕，不要觸發畫布事件
+            if(e.target.tagName === 'BUTTON') return;
+            // e.preventDefault(); // 移除這行，允許頁面滾動，但在 canvas 內部我們用 css touch-action: none 處理
+            this.handleDown(e); 
+        };
+        const move = (e) => { 
+            // 只有在拖曳且在 canvas 上時才 preventDefault
+            if(this.isDragging) e.preventDefault(); 
+            this.handleMove(e); 
+        };
+        const end = (e) => { this.handleUp(e); };
+
+        this.canvas.addEventListener('mousedown', start);
+        this.canvas.addEventListener('mousemove', move);
+        window.addEventListener('mouseup', end);
+        
+        this.canvas.addEventListener('touchstart', start, {passive: false});
+        this.canvas.addEventListener('touchmove', move, {passive: false});
+        window.addEventListener('touchend', end);
+
+        this.initLevel();
+    }
+
+    initLevel() {
+        this.hasWon = false;
+        if (this.level <= 10) { this.gridSize = 6; document.body.className = 'theme-1'; }
+        else if (this.level <= 20) { this.gridSize = 7; document.body.className = 'theme-2'; }
+        else { this.gridSize = 8; document.body.className = 'theme-3'; }
+
+        // --- 修正尺寸計算 ---
+        // 同時考慮寬度和高度，預留頭部和按鈕的空間 (大約 250px)
+        const safeWidth = window.innerWidth - 30;
+        const safeHeight = window.innerHeight - 250; 
+        const maxS = Math.min(safeWidth, safeHeight, 600); // 限制最大 600px
+        
+        this.cellSize = Math.floor(maxS / this.gridSize);
+        // 確保格子不要太小，方便手指點擊
+        if(this.cellSize < 35) this.cellSize = 35;
+
+        this.canvas.width = this.gridSize * this.cellSize;
+        this.canvas.height = this.gridSize * this.cellSize;
+
+        this.generateLevel();
+        this.userPath = [this.fullPath[0]]; 
+        this.startTimer();
+        document.getElementById('level-title').innerText = `LEVEL ${this.level}`;
+        document.getElementById('modal').style.display = 'none';
+        this.draw();
+    }
+
+    generateLevel() {
+        let success = false;
+        while (!success) {
+            let grid = Array(this.gridSize).fill().map(() => Array(this.gridSize).fill(0));
+            let path = [];
+            let curr = { x: Math.floor(Math.random()*this.gridSize), y: Math.floor(Math.random()*this.gridSize) };
+            
+            const findPath = (p, step) => {
+                grid[p.y][p.x] = step;
+                path.push(p);
+                if (step === this.gridSize * this.gridSize) return true;
+                let dirs = [{x:0,y:1},{x:0,y:-1},{x:1,y:0},{x:-1,y:0}].sort(()=>Math.random()-0.5);
+                for (let d of dirs) {
+                    let nx = p.x+d.x, ny = p.y+d.y;
+                    if (nx>=0 && nx<this.gridSize && ny>=0 && ny<this.gridSize && grid[ny][nx]===0) {
+                        if (findPath({x:nx, y:ny}, step+1)) return true;
+                    }
+                }
+                grid[p.y][p.x] = 0; path.pop(); return false;
+            };
+
+            if (findPath(curr, 1)) {
+                this.fullPath = path;
+                this.checkpoints = {};
+                for (let i = 1; i <= 9; i++) {
+                    let idx = Math.floor((path.length - 1) * (i - 1) / 8);
+                    this.checkpoints[i] = path[idx];
+                }
+                success = true;
+            }
+        }
+    }
+
+    startTimer() {
+        clearInterval(this.timerInterval);
+        this.startTime = Date.now();
+        this.timerInterval = setInterval(() => {
+            let sec = Math.floor((Date.now() - this.startTime) / 1000);
+            let m = Math.floor(sec/60).toString().padStart(2,'0');
+            let s = (sec%60).toString().padStart(2,'0');
+            document.getElementById('timer').innerText = `時間: ${m}:${s}`;
+        }, 1000);
+    }
+
+    handleDown(e) {
+        let pos = this.getGridPos(e);
+        if (!pos) return;
+        const last = this.userPath[this.userPath.length - 1];
+        if (pos.x === last.x && pos.y === last.y) {
+            this.isDragging = true;
+            this.lastInputPos = pos;
+        }
+    }
+
+    handleMove(e) {
+        if (!this.isDragging) return;
+        let pos = this.getGridPos(e);
+        if (!pos) return;
+        if (this.lastInputPos && pos.x === this.lastInputPos.x && pos.y === this.lastInputPos.y) return;
+        this.lastInputPos = pos;
+
+        let last = this.userPath[this.userPath.length-1];
+        
+        if (this.userPath.length > 1) {
+            let prev = this.userPath[this.userPath.length - 2];
+            if (pos.x === prev.x && pos.y === prev.y) {
+                this.undo();
+                return;
+            }
+        }
+
+        if (Math.abs(pos.x - last.x) + Math.abs(pos.y - last.y) === 1) {
+            if (this.userPath.some(p => p.x === pos.x && p.y === pos.y)) return;
+            let nextNumTarget = this.getNextTargetNum();
+            for (let i = nextNumTarget + 1; i <= 9; i++) {
+                let cp = this.checkpoints[i];
+                if (pos.x === cp.x && pos.y === cp.y) return;
+            }
+            this.userPath.push(pos);
+            playTone('move');
+            this.draw();
+            this.checkStatus(false);
+        }
+    }
+
+    handleUp(e) {
+        this.isDragging = false;
+        this.checkStatus(true);
+    }
+
+    checkStatus(isFinalCheck) {
+        const last = this.userPath[this.userPath.length - 1];
+        const endPoint = this.checkpoints[9];
+        const atEndPoint = (last.x === endPoint.x && last.y === endPoint.y);
+        
+        if (atEndPoint) {
+            const isFull = this.userPath.length === this.gridSize * this.gridSize;
+            if (isFull) {
+                this.win();
+            } else {
+                this.showToast("還有格子沒填滿！");
+                if(isFinalCheck) playTone('error');
+            }
+        }
+    }
+
+    showToast(msg) {
+        const toast = document.getElementById('toast');
+        toast.innerText = msg;
+        toast.style.opacity = 1;
+        clearTimeout(this.toastTimer);
+        this.toastTimer = setTimeout(() => { toast.style.opacity = 0; }, 2000);
+    }
+
+    win() {
+        if (this.hasWon) return;
+        this.hasWon = true;
+        clearInterval(this.timerInterval);
+        playTone('win');
+        let timeStr = document.getElementById('timer').innerText;
+        document.getElementById('modal-time').innerText = `完成用時: ${timeStr.split(': ')[1]}`;
+        document.getElementById('modal').style.display = 'flex';
+    }
+
+    undo() {
+        if (this.userPath.length > 1) {
+            this.userPath.pop();
+            this.draw();
+            playTone('move');
+            this.hasWon = false;
+        }
+    }
+
+    showHint() {
+        let currentIdx = this.userPath.length - 1;
+        let isOnTrack = true;
+        for(let i=0; i<this.userPath.length; i++) {
+            if (this.userPath[i].x !== this.fullPath[i].x || this.userPath[i].y !== this.fullPath[i].y) {
+                isOnTrack = false;
+                break;
+            }
+        }
+        if (isOnTrack) {
+            let next = this.fullPath[currentIdx + 1];
+            let curr = this.userPath[currentIdx];
+            let dir = "";
+            if (next.x > curr.x) dir = "右 👉";
+            else if (next.x < curr.x) dir = "左 👈";
+            else if (next.y > curr.y) dir = "下 👇";
+            else dir = "上 👆";
+            this.showToast(`提示：往 ${dir}`);
+        } else {
+            this.showToast("路徑偏離了，請返回一步");
+        }
+    }
+
+    getNextTargetNum() {
+        for (let i = 1; i <= 9; i++) {
+            let cp = this.checkpoints[i];
+            let found = this.userPath.some(p => p.x === cp.x && p.y === cp.y);
+            if (!found) return i;
+        }
+        return 10;
+    }
+
+    nextLevel() {
+        if (this.level < 30) {
+            this.level++;
+            this.initLevel();
+        } else {
+            alert("恭喜全破！");
+        }
+    }
+
+    getGridPos(e) {
+        const rect = this.canvas.getBoundingClientRect();
+        const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+        const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+        const x = Math.floor((clientX - rect.left) / this.cellSize);
+        const y = Math.floor((clientY - rect.top) / this.cellSize);
+        if (x>=0 && x<this.gridSize && y>=0 && y<this.gridSize) return {x,y};
+        return null;
+    }
+
+    draw() {
+        this.ctx.clearRect(0,0,this.canvas.width, this.canvas.height);
+        
+        // 畫網格線
+        this.ctx.strokeStyle = "rgba(255,255,255,0.05)";
+        this.ctx.lineWidth = 1;
+        for(let i=0; i<=this.gridSize; i++) {
+            this.ctx.beginPath();
+            this.ctx.moveTo(i*this.cellSize, 0); this.ctx.lineTo(i*this.cellSize, this.canvas.height);
+            this.ctx.stroke();
+            this.ctx.beginPath();
+            this.ctx.moveTo(0, i*this.cellSize); this.ctx.lineTo(this.canvas.width, i*this.cellSize);
+            this.ctx.stroke();
+        }
+
+        // 畫路徑
+        if (this.userPath.length > 1) {
+            this.ctx.beginPath();
+            this.ctx.strokeStyle = "#4cc9f0";
+            this.ctx.lineWidth = this.cellSize * 0.4;
+            this.ctx.lineCap = "round"; this.ctx.lineJoin = "round";
+            this.userPath.forEach((p, i) => {
+                let x = p.x * this.cellSize + this.cellSize/2;
+                let y = p.y * this.cellSize + this.cellSize/2;
+                if(i===0) this.ctx.moveTo(x,y); else this.ctx.lineTo(x,y);
+            });
+            this.ctx.stroke();
+        }
+        
+        // 畫數字
+        for (let i = 1; i <= 9; i++) {
+            let p = this.checkpoints[i];
+            let x = p.x * this.cellSize + this.cellSize/2;
+            let y = p.y * this.cellSize + this.cellSize/2;
+            let isReached = this.userPath.some(up => up.x === p.x && up.y === p.y);
+            
+            this.ctx.beginPath();
+            this.ctx.arc(x, y, this.cellSize*0.35, 0, Math.PI*2);
+            this.ctx.fillStyle = isReached ? "#4cc9f0" : "#2d3748";
+            this.ctx.fill();
+            this.ctx.strokeStyle = "white";
+            this.ctx.lineWidth = 3;
+            this.ctx.stroke();
+
+            this.ctx.fillStyle = "white";
+            this.ctx.font = `bold ${this.cellSize*0.5}px Arial`;
+            this.ctx.textAlign = "center"; this.ctx.textBaseline = "middle";
+            this.ctx.fillText(i, x, y);
+        }
+    }
+}
+
+const game = new Game();
+window.addEventListener('resize', () => game.initLevel());
+</script>
+</body>
+</html>
